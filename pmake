@@ -5,12 +5,6 @@ use warnings;
 # imports
 use Getopt::Std;
 
-# TODO: construct subroutines up here
-
-# TODO: retrieve assignments from makefile 
-
-# TODO: retrieve targets from makefile
-
 # use getopts in the canonical fashion
 my %opts;
 getopts('dnf:', \%opts);
@@ -19,15 +13,30 @@ my $debug_mode = (exists $opts{'d'}) ? 1          : 0;
 my $nex_mode   = (exists $opts{'n'}) ? 1          : 0;
 my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 
+# subs_openfile: Reads entire file from first argument and returns it as string.
+sub subs_openfile
+{
+  my $file_location = $_[0];
+  if($debug_mode)
+  {
+    print("Reading in: $file_location\n");
+  }
+  local $/=undef;
+  open MAKEFILE, $file_location or die('Makefile:'.$file_location.' could not be opened');
+  my $file_contents = <MAKEFILE>;
+  close MAKEFILE;
+  return $file_contents;
+}
+
+# TODO: retrieve assignments from makefile 
+
+# TODO: retrieve targets from makefile
+
+
+
 # get the target
 my $target = $ARGV[0];
-my $mf_contents;
+my $mf_contents = subs_openfile($makefile);
 
 # Read selected makefile into a string
 # TODO: make this into a subroutine so it doesn't burn my retinas
-{
-  local $/=undef;
-  open MAKEFILE, $makefile or die('Makefile:$makefile could not be opened');
-  $mf_contents = <MAKEFILE>;
-  close MAKEFILE;
-}
