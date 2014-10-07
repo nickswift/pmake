@@ -5,9 +5,14 @@ use warnings;
 # imports
 use Getopt::Std;
 
-my %opts;
+# TODO: construct subroutines up here
+
+# TODO: retrieve assignments from makefile 
+
+# TODO: retrieve targets from makefile
 
 # use getopts in the canonical fashion
+my %opts;
 getopts('dnf:', \%opts);
 
 my $debug_mode = (exists $opts{'d'}) ? 1          : 0;
@@ -16,3 +21,13 @@ my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 
 # get the target
 my $target = $ARGV[0];
+my $mf_contents;
+
+# Read selected makefile into a string
+# TODO: make this into a subroutine so it doesn't burn my retinas
+{
+  local $/=undef;
+  open MAKEFILE, $makefile or die('Makefile:$makefile could not be opened');
+  $mf_contents = <MAKEFILE>;
+  close MAKEFILE;
+}
