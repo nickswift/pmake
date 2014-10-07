@@ -4,12 +4,14 @@
 use Getopt::Std;
 
 # main vars
-my %opts;
+# my %opts;
 
 my $debug_mode;
 my $nex_mode;
 
 # use getopts in the canonical fashion
-getopts('dn:', %opts);
+getopts('dnf:', \%opts);
 
-print("%opts");
+foreach (sort keys %opts) {
+  print("$_ : $opts{$_}\n");
+}
