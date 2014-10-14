@@ -69,12 +69,6 @@ sub mf_parse {
 }
 
 # Read selected makefile into a string
-# TODO: make this into a subroutine so it doesn't burn my retinas
-{
-  local $/=undef;
-  open MAKEFILE, $makefile or die('Makefile:$makefile could not be opened');
-  $mf_contents = <MAKEFILE>;
-  close MAKEFILE;
-}
+$mf_contents = subs_openfile($makefile);
 
 %targ_root = mf_parse($mf_contents);
