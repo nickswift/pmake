@@ -40,38 +40,92 @@ sub subs_openfile
 # TODO: retrieve assignments from makefile 
 
 # TODO: retrieve targets from makefile
-
-# create a target node
-sub mf_targ_node 
+sub new_macro_node 
 {
+  my %node;
+  $node{"symbol"} = '=';
+  @node{"left"}   = $_[0];
+  @node{"right"}  = $_[1];
+  return %node;
+}
 
+sub new_evalmacro_node
+{
+  my %node;
+  $node{"symbol"} = ':=';
+  @node{"left"}   = $_[0];
+  @node{"right"}  = $_[1];
+  return %node; 
+}
+
+sub new_target_node
+{
+  my %node;
+  $node{"symbol"} = ':';
+  $node{"output"} = $_[0];
+  $node{"deps"}   = $_[1];
+  @node{"body"}   = @_[2];
+  return %node;
 }
 
 # parse a makefile into target scope tree
 sub mf_parse 
 {
-
   # regex
-  my $macro_regex = "[A-z0-9_\$\{\}]+ *= *[A-z0-9_\$\{\}]+";
-  my $evalmacro_regex = "[A-z0-9_\$\{\}]+ *\:= *[A-z0-9_\$\{\}]+";
-  my $target_regex = "[A-z0-9_\$\{\}]+ *: *[A-z0-9_\$\{\}]+";
+  my $macro_regex       = "[A-z0-9_\$\{\}]+ *= *[A-z0-9_\$\{\}]+";
+  my $evalmacro_regex   = "[A-z0-9_\$\{\}]+ *\:= *[A-z0-9_\$\{\}]+";
+  my $target_regex      = "[A-z0-9_\$\{\}]+ *\: *[A-z0-9_\$\{\}]+";
+  my $target_line_regex = "[\t].*"
+
+  my @root;
+  my %active_target = undef;
 
   # read makefile line-by-line
   for my $line (split(/\n/, $_[0])) 
   {
-    if ($line =~ /$macro_regex/) {
-      if($debug_mode) {
-        print("macro: $line\n");
+    # hijack the loop until we don't encounter target body lines
+    if (%active_target != undef) 
+    {
+      # TODO: append current line to target body
+      if ($line =~ /$target_line_regex/)
+      {
+        push(@active_target{"body"}, $line);
       }
-    } elsif ($line =~ /$evalmacro_regex/) {
-      if($debug_mode) {
-        print("evalmacro: $line\n");
+      else 
+      {
+        %active_target = undef;
+        continue;
       }
-    } elsif ($line =~ /$target_regex/) {
-      if($debug_mode) {
-        print("target: $line\n");
+    }
+
+    # interpret as a macro, evalmacro or target
+    if ($line =~ /$macro_regex/) 
+    {
+      if($debug_mode) 
+      {
+        local @macro = split(/=/, $line);
+        push(@root, new_macro_node($macro[0], $macro[1]));
       }
-    } else {
+    } 
+    elsif ($line =~ /$evalmacro_regex/) 
+    {
+      if($debug_mode) 
+      {
+        local @evalmacro = split(/\:=/, $line);
+        push(@root, new_evalmacro_node($evalmacro[0], $evalmacro[1]));
+      }
+    } 
+    elsif ($line =~ /$target_regex/) 
+    {
+      if($debug_mode) 
+      {
+        local @targetline = split(/\:/, $line);
+        %active_target    = new_target_node($targetline[0], $targetline, ());
+        push(@root, %active_target);
+      }
+    } 
+    else
+    {
       die("you're a terrible person");
     }
   }
@@ -80,9 +134,6 @@ sub mf_parse
 
 # Read selected makefile into a string
 $mf_contents = subs_openfile($makefile);
+
 # Parse the contents of the makefile into a tree
 %targ_root = mf_parse($mf_contents);
-
-
-
-
