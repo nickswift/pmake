@@ -13,6 +13,31 @@ my $debug_mode = (exists $opts{'d'}) ? 1          : 0;
 my $nex_mode   = (exists $opts{'n'}) ? 1          : 0;
 my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 
+# subs_openfile: Reads entire file from first argument and returns it as string.
+sub subs_openfile
+{
+  my $file_location = $_[0];
+  if($debug_mode)
+  {
+    print("Reading in: $file_location ... ");
+  }
+  local $/=undef;
+  open MAKEFILE, $file_location or die("Makefile:$file_location could not be opened\n");
+  my $file_contents = <MAKEFILE>;
+  if($debug_mode)
+  {
+    print("DONE\n");
+  }
+  close MAKEFILE;
+  return $file_contents;
+}
+
+# TODO: retrieve assignments from makefile 
+
+# TODO: retrieve targets from makefile
+
+
+
 # get the target
 my $target = $ARGV[0];
 my $mf_contents;
