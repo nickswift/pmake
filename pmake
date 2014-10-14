@@ -13,6 +13,11 @@ my $debug_mode = (exists $opts{'d'}) ? 1          : 0;
 my $nex_mode   = (exists $opts{'n'}) ? 1          : 0;
 my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 
+# get the target
+my $target = $ARGV[0];
+my $mf_contents;
+my %targ_root;
+
 # subs_openfile: Reads entire file from first argument and returns it as string.
 sub subs_openfile
 {
@@ -36,33 +41,38 @@ sub subs_openfile
 
 # TODO: retrieve targets from makefile
 
-
-
-# get the target
-my $target = $ARGV[0];
-my $mf_contents;
-my %targ_root;
 # create a target node
-sub mf_targ_node {
+sub mf_targ_node 
+{
 
 }
 
 # parse a makefile into target scope tree
-sub mf_parse {
-  # establish root node
-  my %targ_current;
-  my %targ_root = {
-    'asgs'     => {},
-    'children' => ()
-  };
+sub mf_parse 
+{
+
+  # regex
+  my $macro_regex = "[A-z0-9_\$\{\}]+ *= *[A-z0-9_\$\{\}]+";
+  my $evalmacro_regex = "[A-z0-9_\$\{\}]+ *\:= *[A-z0-9_\$\{\}]+";
+  my $target_regex = "[A-z0-9_\$\{\}]+ *: *[A-z0-9_\$\{\}]+";
 
   # read makefile line-by-line
-  for my $line (split(/\n/, $_[0])) {
-    # do regex matching
-    if($line =~ /[a-zA-Z_%\.][a-zA-Z0-9_\.\%]{0,31} *:[^=] *[^ ]*/) {
-      print("TARG $&\n");
-    } elsif($line =~ /[a-zA-Z_][a-zA-Z0-9_]{0,31} *:?= *[^ ]*/) {
-      print("ASG $&\n");
+  for my $line (split(/\n/, $_[0])) 
+  {
+    if ($line =~ /$macro_regex/) {
+      if($debug_mode) {
+        print("macro: $line\n");
+      }
+    } elsif ($line =~ /$evalmacro_regex/) {
+      if($debug_mode) {
+        print("evalmacro: $line\n");
+      }
+    } elsif ($line =~ /$target_regex/) {
+      if($debug_mode) {
+        print("target: $line\n");
+      }
+    } else {
+      die("you're a terrible person");
     }
   }
   return %targ_root;
@@ -70,5 +80,9 @@ sub mf_parse {
 
 # Read selected makefile into a string
 $mf_contents = subs_openfile($makefile);
-
+# Parse the contents of the makefile into a tree
 %targ_root = mf_parse($mf_contents);
+
+
+
+
