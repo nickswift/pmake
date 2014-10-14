@@ -5,12 +5,6 @@ use warnings;
 # imports
 use Getopt::Std;
 
-# TODO: construct subroutines up here
-
-# TODO: retrieve assignments from makefile 
-
-# TODO: retrieve targets from makefile
-
 # use getopts in the canonical fashion
 my %opts;
 getopts('dnf:', \%opts);
@@ -22,6 +16,32 @@ my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 # get the target
 my $target = $ARGV[0];
 my $mf_contents;
+my %targ_root;
+# create a target node
+sub mf_targ_node {
+
+}
+
+# parse a makefile into target scope tree
+sub mf_parse {
+  # establish root node
+  my %targ_current;
+  my %targ_root = {
+    'asgs'     => {},
+    'children' => ()
+  };
+
+  # read makefile line-by-line
+  for my $line (split(/\n/, $_[0])) {
+    # do regex matching
+    if($line =~ /[a-zA-Z_%\.][a-zA-Z0-9_\.\%]{0,31} *:[^=] *[^ ]*/) {
+      print("TARG $&\n");
+    } elsif($line =~ /[a-zA-Z_][a-zA-Z0-9_]{0,31} *:?= *[^ ]*/) {
+      print("ASG $&\n");
+    }
+  }
+  return %targ_root;
+}
 
 # Read selected makefile into a string
 # TODO: make this into a subroutine so it doesn't burn my retinas
@@ -31,3 +51,5 @@ my $mf_contents;
   $mf_contents = <MAKEFILE>;
   close MAKEFILE;
 }
+
+%targ_root = mf_parse($mf_contents);
