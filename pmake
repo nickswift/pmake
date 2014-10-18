@@ -16,124 +16,221 @@ my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 # get the target
 my $target = $ARGV[0];
 my $mf_contents;
-my %targ_root;
+my $targ_root;
 
-# subs_openfile: Reads entire file from first argument and returns it as string.
-sub subs_openfile
+# ------------------------------------------------------------------------------
+# SUBROUTINES: HELPER FUNCTIONS
+# ------------------------------------------------------------------------------
+sub debug_print ($)
 {
-  my $file_location = $_[0];
-  if($debug_mode)
-  {
-    print("Reading in: $file_location ... ");
+  if ($debug_mode) {
+    my $msg = shift;
+    print("$msg\n");
   }
+}
+
+sub print_mf_tree ($)
+{
+  my $root_node   = shift;
+  my @macro_list  = @{$root_node->{'macros'}};
+  my @target_list = @{$root_node->{'targets'}};
+
+  print("@macro_list\n");
+  print("@target_list\n");
+}
+
+# ------------------------------------------------------------------------------
+# SUBROUTINES: FILE MANAGEMENT
+# ------------------------------------------------------------------------------
+# subs_openfile: Reads entire file from first argument and returns it as string.
+sub subs_openfile ($)
+{
+  my $file_location = shift;
+  debug_print("Reading in: $file_location ... ");
   local $/=undef;
-  open MAKEFILE, $file_location or die("Makefile:$file_location could not be opened\n");
+
+  open MAKEFILE, $file_location 
+    or die("Makefile:$file_location could not be opened\n");
+  
   my $file_contents = <MAKEFILE>;
-  if($debug_mode)
-  {
-    print("DONE\n");
-  }
+  debug_print("DONE");
   close MAKEFILE;
   return $file_contents;
 }
 
-# TODO: retrieve assignments from makefile 
-
-# TODO: retrieve targets from makefile
-sub new_macro_node 
+# ------------------------------------------------------------------------------
+# SUBROUTINES: THE PSEUDO SYNTAX-TREE
+# ------------------------------------------------------------------------------
+sub new_root_node ()
 {
   my %node;
-  $node{"symbol"} = '=';
-  @node{"left"}   = $_[0];
-  @node{"right"}  = $_[1];
-  return %node;
+  
+  $node{'macros'}  = ();
+  $node{'targets'} = ();
+
+  return \%node;
 }
 
-sub new_evalmacro_node
+sub root_node_add_macro ($$)
+{
+  my $node = shift;
+  push(@{$node->{'macros'}}, shift);
+}
+
+sub root_node_add_target ($$)
+{
+  my $node = shift;
+  push(@{$node->{'targets'}}, shift);
+}
+
+sub new_macro_node ($$)
 {
   my %node;
-  $node{"symbol"} = ':=';
-  @node{"left"}   = $_[0];
-  @node{"right"}  = $_[1];
-  return %node; 
+  $node{'key'}   = shift;
+  $node{'value'} = shift;
+  return \%node;
 }
 
-sub new_target_node
+# search for macro in the root node when one is needed
+sub find_macro ($$)
 {
-  my %node;
-  $node{"symbol"} = ':';
-  $node{"output"} = $_[0];
-  $node{"deps"}   = $_[1];
-  @node{"body"}   = @_[2];
-  return %node;
-}
+  my $node     = shift;
+  my $needle   = shift;
+  my @haystack = @{$node->{'macros'}};
+  my $foundval = undef;
 
-# parse a makefile into target scope tree
-sub mf_parse 
-{
-  # regex
-  my $macro_regex       = "[A-z0-9_\$\{\}]+ *= *[A-z0-9_\$\{\}]+";
-  my $evalmacro_regex   = "[A-z0-9_\$\{\}]+ *\:= *[A-z0-9_\$\{\}]+";
-  my $target_regex      = "[A-z0-9_\$\{\}]+ *\: *[A-z0-9_\$\{\}]+";
-  my $target_line_regex = "[\t].*"
-
-  my @root;
-  my %active_target = undef;
-
-  # read makefile line-by-line
-  for my $line (split(/\n/, $_[0])) 
-  {
-    # hijack the loop until we don't encounter target body lines
-    if (%active_target != undef) 
-    {
-      # TODO: append current line to target body
-      if ($line =~ /$target_line_regex/)
-      {
-        push(@active_target{"body"}, $line);
-      }
-      else 
-      {
-        %active_target = undef;
-        continue;
-      }
-    }
-
-    # interpret as a macro, evalmacro or target
-    if ($line =~ /$macro_regex/) 
-    {
-      if($debug_mode) 
-      {
-        local @macro = split(/=/, $line);
-        push(@root, new_macro_node($macro[0], $macro[1]));
-      }
-    } 
-    elsif ($line =~ /$evalmacro_regex/) 
-    {
-      if($debug_mode) 
-      {
-        local @evalmacro = split(/\:=/, $line);
-        push(@root, new_evalmacro_node($evalmacro[0], $evalmacro[1]));
-      }
-    } 
-    elsif ($line =~ /$target_regex/) 
-    {
-      if($debug_mode) 
-      {
-        local @targetline = split(/\:/, $line);
-        %active_target    = new_target_node($targetline[0], $targetline, ());
-        push(@root, %active_target);
-      }
-    } 
-    else
-    {
-      die("you're a terrible person");
+  for my $macro (@haystack) {
+    my $comp = $macro->{'key'};
+    if ($comp eq $needle) {
+      $foundval = $comp;
+      last;
     }
   }
-  return %targ_root;
+
+  defined($foundval) or die("MACRO \"$needle\" NOT FOUND");
+  return $foundval;
 }
+
+# evaluate a macro's value immediately
+sub new_evalmacro_node ($$)
+{
+  my %node;
+  my $key    = shift;
+  my $rawval = shift;
+
+  # ex) ALL:= ${basename ${filter %.tex %.mm, ${shell ls -t}}}
+  # pull apart the value
+  system($rawval) == 0
+    or die ("$rawval failed: $?");
+  #
+  # my $val = find_macro($root_node, );
+
+  %node = new_macro_node($key, shift);
+  return \%node;
+}
+
+sub new_target_node ($$)
+{
+  my %node;
+  $node{'output'} = shift;
+  $node{'deps'}   = shift;
+  $node{'stmts'}  = ();
+  return \%node;
+}
+
+sub target_node_add_stmt ($$)
+{
+  my $node = shift;
+  push(@{$node->{'stmts'}}, shift);
+}
+
+# ------------------------------------------------------------------------------
+# SUBROUTINES: MAKEFILE PARSING
+# ------------------------------------------------------------------------------
+sub mf_parse ($)
+{
+  # regex
+  debug_print("BUILDING MAKEFILE TREE");
+
+  my $macro_regex       = "[A-z0-9_\$\{\}]+ *= *[A-z0-9_\$\{\}]+";
+  my $evalmacro_regex   = "[A-z0-9_\$\{\}]+ *\:= *[A-z0-9_\$\{\}]+";
+  my $target_regex      = "[A-z0-9_\$\{\}]+ *\: *[A-z0-9_\$\{\}]*";
+  my $target_line_regex = "[\t].*";
+
+  my $root_node = new_root_node();
+
+  # reference to whatever target node is being built (if that's the case)
+  my $active_target = undef;
+  my $recog_line    = 0;
+
+  # Read makefile line-by-line
+  for my $line (split(m/\n/, shift)) {
+
+    if ($line =~ /$target_line_regex/ || $line =~ /$macro_regex/ 
+      || $line =~ /$target_regex/) 
+    {
+      debug_print("READ LINE [ $line ]");
+    }
+
+    # allow the active target to hijack the process until further notice
+    if (defined($active_target)) {
+      if ($line =~ /$target_line_regex/) {
+        debug_print("DETECTED: {statement}: $line");
+        target_node_add_stmt($active_target, $line);
+      } else {
+        # no regex match? stop hijacking.
+        $active_target = undef;
+      }
+      continue;
+    } 
+
+    # Determine whether this is a macro, evalmacro or target
+    if ($line =~ /$macro_regex/) {
+      my @macro_strs = split(m/ *= */, $line);
+      debug_print("DETECTED: macro {key val}: @macro_strs");
+      my $macro_node = new_macro_node(shift(@macro_strs), 
+        shift(@macro_strs));
+
+      root_node_add_macro($root_node, $macro_node);
+    } elsif ($line =~ /$evalmacro_regex/) {
+      my @macro_strs = split(m/ *\:= */, $line);
+      debug_print("DETECTED: eval_macro {key val}: @macro_strs");
+      my $macro_node = new_macro_node(shift(@macro_strs), 
+        shift(@macro_strs));
+
+      root_node_add_macro($root_node, $macro_node);
+    } elsif ($line =~ /$target_regex/) {
+      # Add new target node -- allow that target to hijack the loop
+      my @target_strs = split(m/ *\: */, $line);
+      debug_print("DETECTED: target {output deps}: @target_strs");
+
+      my $targ_size   = @target_strs;
+      debug_print("TARG SIZE: $targ_size");
+      my $targ_out    = shift(@target_strs);
+      my $targ_deps   = ($targ_size == 2) ? shift(@target_strs) : '';
+
+      my $target_node = new_target_node($targ_out, $targ_deps);
+
+      root_node_add_target($root_node, $target_node);
+    }
+  }
+  debug_print("DONE BUILDING MAKEFILE TREE");
+  # give back the reference
+  return $root_node;
+}
+
+
+# ------------------------------------------------------------------------------
+# MAIN PROGRAM CODE
+# ------------------------------------------------------------------------------
 
 # Read selected makefile into a string
 $mf_contents = subs_openfile($makefile);
 
 # Parse the contents of the makefile into a tree
-%targ_root = mf_parse($mf_contents);
+$targ_root = mf_parse($mf_contents);
+
+# TODO: Print tree
+print_mf_tree($targ_root);
+
+# TODO: interpret root node -- use it to compile someone's stupid bullshit.
