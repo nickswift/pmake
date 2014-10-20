@@ -1,9 +1,12 @@
 #!/usr/bin/perl
+# Partner: Nicholas Wood (njwood@ucsc.edu)
+# Partner: William Cork (wcork@ucsc.edu)
 use strict;
 use warnings;
 
 # imports
 use Getopt::Std;
+use Cwd;
 
 # use getopts in the canonical fashion
 my %opts;
@@ -14,8 +17,9 @@ my $nex_mode   = (exists $opts{'n'}) ? 1          : 0;
 my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 
 # Regexes
-my $regex_macro  = qr/^[\w\$\{\}^\t]+ *\:?= *[\w\$\{\}\. ]+$/;
-my $regex_target = qr/^[\w\$\{\}\.^\t]+ *\: *[\w\$\{\}\. ]*$/;
+my $regex_macro   = qr/^[\w\$\{\}^\t]+ *\:?= *[\w\$\{\}\.\%\- ]+$/;
+my $regex_target  = qr/^[\w\$\{\}\.^\t]+ *\: *([^ ].*)?$/;
+my $regex_pattern = qr/^%\.[\w\$\{\}\.^\t]+ *\: *.*$/;
 
 # ------------------------------------------------------------------------------
 # SUBROUTINES: HELPER FUNCTIONS
@@ -94,7 +98,10 @@ sub read_makefile ($)
 # ------------------------------------------------------------------------------
 my %macros;
 my %targets;
+my $first_target;
 my $active_target;
+my %pattern_targets;
+my $active_pattern_target;
 
 # Find a macro key inside the macro hash -- die if it's not found
 # $ --> the name to look up
@@ -190,22 +197,57 @@ sub eval_command ($$)
 # SUBROUTINES: TARGETS 
 # ------------------------------------------------------------------------------
 
-sub add_target ($)
+sub add_target_general ($$)
 {
-  my $line   = shift;
-  $line      =~ m/([\w\$\{\}]+) *\: *([\w\$\{\}\. ]*)/;
-  my $output = $1;
-  my @deps   = defined($2) ? split(m/ /, $2) : ();
-  my @cmds   = ();
+  # unset active target flags
+  $active_target         = undef;
+  $active_pattern_target = undef;
+
+  my $thash    = shift;
+  my $line     = shift;
+  $line        =~ m/([\w\$\{\}\.%]+) *\: *([\w\$\{\}\.% ]*)/;
+  my $output   = $1;
+
+  # evaluate macros in the target's name
+  $output = eval_macros($output);
+
+  # evaluate macros in the target's dependency list
+  my $raw_deps = defined($2) ? $2 : '';
+  $raw_deps    = eval_macros($raw_deps);
+
+  # pull dependency list apart by space
+  my @deps = split(m/ /, $raw_deps);
+  my @cmds = ();
 
   # define the target as another hash
   my %target;
-  $target{'built'}    = 0;
-  $target{'deps'}     = \@deps;
-  $target{'cmds'}     = \@cmds;
-  $target{'firstdep'} = $deps[0];
-  $targets{$output}   = \%target;
-  $active_target      = \%target;
+
+  # check whether the target exists already
+  if (exists($thash->{$output})) {
+    # Append dependencies to this target's extant dependency list
+    %target = %{$thash->{$output}};
+    for my $dep (@deps) {
+      push(@{$target{'deps'}}, $dep);
+    }
+  } else {
+    # check for file
+    # TODO: also check timestamp to see if it has been modified since last build
+    $target{'built'}    = (-e $output) ? 1 : 0;
+    $target{'deps'}     = \@deps;
+    $target{'cmds'}     = \@cmds;
+    $target{'firstdep'} = $deps[0];
+    $thash->{$output}   = \%target;
+  }
+
+  $first_target  = defined($first_target) ? $first_target : $output;
+  return \%target;
+}
+
+sub add_target ($)
+{
+  my $output = shift;
+  $active_target = add_target_general(\%targets, $output);
+  debug_print("ADDING TARGET: $output --> $active_target");
 }
 
 # being sure to prototype the function so it can recurse
@@ -214,12 +256,21 @@ sub build_target_output ($);
 # build the output of a target
 sub build_target_output ($)
 {
-  my ($target, @deps, $dep, @commands, $cmd);
+  my ($target, $dep, $cmd);
   my %macros_local;
+  $target = shift;
 
-  $target   = shift;
-  @deps     = @{$targets{$target}->{'deps'}};
-  @commands = @{$targets{$target}->{'cmds'}};
+  # If there's no target, look for a file, otherwise build the target
+  if (!exists($targets{$target})) { 
+    debug_print("TARGET \"$target\" DOES NOT EXIST");
+    if (-e $target) {
+      return;
+    }
+  }
+
+  my @deps     = @{$targets{$target}->{'deps'}};
+  my @commands = @{$targets{$target}->{'cmds'}};
+
   debug_print("BUILDING TARGET: $target");
 
   # Step through dependencies and ensure they've been built
@@ -242,12 +293,94 @@ sub build_target_output ($)
     if ($cmd =~ /${regex_macro}/) {
       # macros in isolated context
     } else {
-      # Evaluate variables/wildcards/etc... 
-
       # execute
       debug_print("PLAIN COMMAND: $cmd");
-      run_system_command($cmd);
+
+      print("$cmd\n");
+      run_system_command($cmd) if (!$nex_mode);
     }
+  }
+}
+
+#-------------------------------------------------------------------------------
+# SUBROUTINES: PATTERN RULES AND PATTERN EXPANSION
+#-------------------------------------------------------------------------------
+ 
+sub add_pattern_target ($)
+{
+  my $output = shift;
+  $active_pattern_target = add_target_general(\%pattern_targets, $output);
+  debug_print("ADDING PATTERN TARGET: $output --> $active_pattern_target");
+}
+
+sub generate_pattern_target ($)
+{
+  my ($keyword);
+  $keyword  = shift;
+
+  my $template = $pattern_targets{$keyword};
+  my %target;
+  my @deps   = ();
+  my @cmds   = ();
+  my $output = $keyword;
+  $output    =~ s/%(\..+)/$keyword\.$2/g;
+
+  for my $dep (@{$template->{'deps'}}) {
+    debug_print("PUSHING: $dep");
+    $dep =~ m/(%)(\..+)/;
+    push(@deps, "$keyword\.$2");
+  }
+
+  for my $cmd (@{$template->{'cmds'}}) {
+    my $tmp_cmd =  $cmd;
+    $tmp_cmd    =~ s/(%)(\..+)/$keyword\.$2/g;
+    push(@cmds, $tmp_cmd);
+  }
+
+  $target{'built'}    = 0;
+  $target{'deps'}     = \@deps;
+  $target{'cmds'}     = \@cmds;
+  $target{'firstdep'} = $deps[0];
+  $targets{$output}   = \%target;
+}
+
+sub expand_pattern_targets ()
+{
+  my ($pattern, $regex_patt);
+
+  # regex for file extensions
+  $regex_patt = qr/%(\.[^ ]+)/;
+
+  # iterate over members of the hash
+  foreach my $key (keys %pattern_targets) {
+    debug_print("KEY: $key");
+    # reset the pattern
+    $pattern = undef;
+
+    # pull apart dependencies
+    for my $dep (@{$pattern_targets{$key}->{'deps'}}) {
+      debug_print("DEP: $dep");
+      # first match determines the pattern (because I'm not Richard Stallman)
+      if ($dep =~ m/${regex_patt}/) {
+        $pattern = $1;
+        last;
+      }
+    }
+    debug_print("FOUND PATTERN: $pattern");
+    $pattern =~ s/\./\\./g;
+
+    # search for %.whatevers in this directory
+    opendir(DIR, getcwd);
+    while (my $file = readdir(DIR)) {
+      debug_print("TESTING $file");
+      # test against pattern
+      if ($file =~ m/$pattern/) {
+        debug_print("MATCH [$file]");
+        # if there's a match, do our thing
+        generate_pattern_target($file);
+      }
+    }
+    closedir(DIR);
   }
 }
 
@@ -262,9 +395,15 @@ sub parse_makefile ($)
 
     # match macro lines
     if ($line =~ /${regex_macro}/) {
-      $active_target = undef;
+      $active_target         = undef;
+      $active_pattern_target = undef;
       debug_print("MACRO: $line");
       add_macro($line);
+
+    # match pattern target lines
+    } elsif ($line =~ /${regex_pattern}/) {
+      debug_print("PATTERN TARGET: $line");
+      add_pattern_target($line);
 
     # match target lines
     } elsif ($line =~ /${regex_target}/) {
@@ -273,10 +412,17 @@ sub parse_makefile ($)
 
     # match terminal command lines
     } elsif ($line =~ /^[\t].*/) {
-      defined($active_target) or die('no active target');
-      debug_print("[$active_target] CMD: $line");
-      push(@{$active_target->{'cmds'}}, $line);
-
+      # add commands to target
+      if (defined($active_target)) {
+        debug_print("[$active_target] CMD: $line");
+        push(@{$active_target->{'cmds'}}, $line);
+      # add commands to pattern target
+      } elsif (defined($active_pattern_target)) {
+        debug_print("[$active_pattern_target] CMD TEMPLATE: $line");
+        push(@{$active_pattern_target->{'cmds'}}, $line);
+      } else {
+        die('no active target');
+      }
     # ignore everything else
     } else {
       debug_print("LINE: $line");
@@ -287,31 +433,33 @@ sub parse_makefile ($)
 # ------------------------------------------------------------------------------
 # MAIN PROGRAM CODE
 # ------------------------------------------------------------------------------
-sub main (@)
+sub main ()
 {
-  my (@args, $mf_contents);
-
-  @args        = shift;
+  my ($mf_contents, $entry_point);
   $mf_contents = read_makefile($makefile);
-
   parse_makefile($mf_contents);
-  debug_print("\nBUILDING...\n");
+
+  debug_print("\n--- EXPANDING PATTERN TARGETS ---\n");
+  expand_pattern_targets();
+
+  debug_print("\n--- STARTING BUILD PROCESS ---\n");
 
   # if there's no argument, default to all and quit
-  if ($#args == 0) {
-    debug_print("NO TARGETS SPECIFIED -- DEFAULTING TO ALL");
-    debug_print("--- FILL MY BONUS CUP ---\n");
-    build_target_output('all');
+  if ($#ARGV < 0) {
+    # look for 'all', if no all default to first target in the hash
+    $entry_point = exists($targets{'all'}) ? 'all' : $first_target;
+    debug_print("STARTING AT TARGET: $entry_point");
+    build_target_output($entry_point);
     return;
   }
 
   debug_print("STEPPING THROUGH SPECIFIED TARGETS");
   # step through desired build targets
-  for my $target (@args) {
+  for my $target (@ARGV) {
     # build 'em
     build_target_output($target);
   }
 }
 
 # invoke main subroutine
-main(@ARGV);
+main();
