@@ -1,9 +1,0 @@
-BIN = hello
-ALL := ${BIN}
-
-all: ${BIN}
-
-${BIN}:
-	HEY = hey.c
-	cc ${HEY}
-

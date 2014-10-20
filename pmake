@@ -1,16 +1,9 @@
-#!/usr/bin/perl 
+#!/usr/bin/perl
 use strict;
 use warnings;
-use Cwd;
-
-use lib cwd();
 
 # imports
 use Getopt::Std;
-use Modules::Helpers;
-use Modules::Files;
-use Modules::SyntaxTree;
-use Modules::Makefiles;
 
 # use getopts in the canonical fashion
 my %opts;
@@ -20,17 +13,305 @@ my $debug_mode = (exists $opts{'d'}) ? 1          : 0;
 my $nex_mode   = (exists $opts{'n'}) ? 1          : 0;
 my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 
-# set debug flag
-Modules::Helpers::set_debug($debug_mode);
+# Regexes
+my $regex_macro  = qr/^[\w\$\{\}^\t]+ *\:?= *[\w\$\{\}\. ]+$/;
+my $regex_target = qr/^[\w\$\{\}\.^\t]+ *\: *[\w\$\{\}\. ]*$/;
 
-# Read selected makefile into a string and parse it
-my $mf_contents = Modules::Files::read_to_string($makefile);
-my $targ_root   = Modules::Makefiles::parse($mf_contents);
+# ------------------------------------------------------------------------------
+# SUBROUTINES: HELPER FUNCTIONS
+# ------------------------------------------------------------------------------
+sub debug_print ($)
+{
+  if ($debug_mode) {
+    my $msg = shift;
+    print("$msg\n");
+  }
+}
 
-print_mf_tree($targ_root);
+# run_system_command: Runs passed command and handles the minus make operator
+sub run_system_command ($)
+{
+  my ($input, $command, $term_signal, $ignore_status, $core_dumped, $exit_status);
 
-# TODO: interpret root node -- use it to compile someone's stupid bullshit.
+  $input         = shift;
+  $command       = undef;
+  $ignore_status = 0;
 
-# get targets
-# for my $target (@ARGV) {
-# }
+  debug_print("Running command: $input");
+  if ($input =~ m/^-/) {
+    $command = $input;
+    $command =~ s/^(-| )+//;
+    debug_print("Command $command Error will be ignored");
+    $ignore_status = 1;
+  } else {
+    $command = $input;
+    debug_print("Command $command Error will not be ignored");
+  }
+  my @args   = split(m/ /, $command);
+  my $output = system(@args); #or exit ($?);
+  my $return_status = $?;
+  $term_signal = $? & 0x7F;
+  $core_dumped = $? & 0x80;
+  $exit_status = ($? >> 8) & 0xFF;
+
+if ($return_status != 0) {
+  debug_print("Return status: $return_status");
+  debug_print("Term Signal: $term_signal");
+  debug_print("Core Dumped: $core_dumped");
+  debug_print("Exit Status: $exit_status");
+  }
+  if($exit_status != 0) {
+    if($ignore_status == 1) {
+        debug_print("Return status ignored");
+    } else {
+        debug_print("BAD Command");
+        exit ($exit_status);
+    }
+  }
+}
+
+# ------------------------------------------------------------------------------
+# SUBROUTINES: FILE MANAGEMENT
+# ------------------------------------------------------------------------------
+# subs_openfile: Reads entire file from first argument and returns it as string.
+sub read_makefile ($)
+{
+  my $file_location = shift;
+  debug_print("Reading in: $file_location ... ");
+  local $/=undef;
+
+  open MAKEFILE, $file_location 
+    or die("Makefile:$file_location could not be opened\n");
+  
+  my $file_contents = <MAKEFILE>;
+  debug_print("DONE");
+  close MAKEFILE;
+  return $file_contents;
+}
+
+# ------------------------------------------------------------------------------
+# SUBROUTINES: MACROS 
+# ------------------------------------------------------------------------------
+my %macros;
+my %targets;
+my $active_target;
+
+# Find a macro key inside the macro hash -- die if it's not found
+# $ --> the name to look up
+sub find_macro ($)
+{
+  my $key = shift;
+  my $val = $macros{$key} or die("ERR: MACRO $key NOT FOUND");
+  return $val;
+}
+
+# Evaluates a macro value
+sub eval_macros ($)
+{
+  # the following line-noise interprets a macro's ${} values by looking them
+  # up in the relevant hash and replacing instances of that sequence in the
+  # original value string
+  my $raw_val = shift;
+  my $val     = $raw_val;
+  while($raw_val =~  m/(\${[^}]+})/g) {
+    my ($tmp_macro, $repl);
+
+    # extract key and find it in the macro hash
+    $tmp_macro =  $1;
+    $tmp_macro =~ m/([^\${}]+)/;
+    $repl      =  find_macro($1);
+
+    # escape the "$" before doing the regex replace
+    $tmp_macro =~ s/\$/\\\$/g;
+    $val       =~ s/$tmp_macro/$repl/e;
+  }
+  return $val;
+}
+
+sub add_macro ($)
+{
+  my $line = shift;
+  $line =~ m/([\w\$\{\}]+) *\:?= *([\w\$\{\}\. ]+)/;
+  my $key = $1;
+  my $val = $2;
+
+  # detect an eval_macros
+  if ($line =~ m/\:/) {
+    $val = eval_macros($val);
+  }
+
+  $macros{$key} = $val;
+}
+
+sub eval_target_macros ($$)
+{
+  my ($tindex, $raw_val, $val, $tmp_macro, $repl);
+  $tindex  = shift;
+  $raw_val = shift;
+  $val     = $raw_val;
+
+  # dereference target
+  my %target = %{$targets{$tindex}};
+
+  # evaluate local macros
+  while ($raw_val =~ m/(\$@|\$\^|\$<)/g) {
+    # get correct macro replacement value
+    $tmp_macro = $1;
+    if    ($tmp_macro eq '\$@') { $repl = $tindex;                      }
+    elsif ($tmp_macro eq '\$^') { $repl = join(' ', @{$target{'deps'}});}
+    elsif ($tmp_macro eq '\$<') { $repl = $target{'firstdep'};          }
+    else                        { die('this shouldn\'t be reachable');  }
+    # do replacement
+    $tmp_macro =~ s/\$/\\\$/g;
+    $val       =~ s/$tmp_macro/$repl/e;
+  }
+
+  # debug_print("$val");
+  return $val;
+}
+
+# input can either be the right side of a macro, or the full command
+# from inside a target
+sub eval_command ($$)
+{
+  my ($tindex, $raw_cmd);
+  $tindex  = shift;
+  $raw_cmd = shift;
+
+  # find the target we're looking at
+  my %target  = %{$targets{$tindex}};
+  $raw_cmd = eval_target_macros($tindex, $raw_cmd);
+
+  # Get values of global macros first
+  return eval_macros($raw_cmd);
+}
+
+# ------------------------------------------------------------------------------
+# SUBROUTINES: TARGETS 
+# ------------------------------------------------------------------------------
+
+sub add_target ($)
+{
+  my $line   = shift;
+  $line      =~ m/([\w\$\{\}]+) *\: *([\w\$\{\}\. ]*)/;
+  my $output = $1;
+  my @deps   = defined($2) ? split(m/ /, $2) : ();
+  my @cmds   = ();
+
+  # define the target as another hash
+  my %target;
+  $target{'built'}    = 0;
+  $target{'deps'}     = \@deps;
+  $target{'cmds'}     = \@cmds;
+  $target{'firstdep'} = $deps[0];
+  $targets{$output}   = \%target;
+  $active_target      = \%target;
+}
+
+# being sure to prototype the function so it can recurse
+sub build_target_output ($);
+
+# build the output of a target
+sub build_target_output ($)
+{
+  my ($target, @deps, $dep, @commands, $cmd);
+  my %macros_local;
+
+  $target   = shift;
+  @deps     = @{$targets{$target}->{'deps'}};
+  @commands = @{$targets{$target}->{'cmds'}};
+  debug_print("BUILDING TARGET: $target");
+
+  # Step through dependencies and ensure they've been built
+  for $dep (@deps) {
+    if ($targets{$target}->{'built'} == 0) {
+      build_target_output($dep);
+    }
+  }
+
+  # step through the commands in this target
+  for $cmd (@commands) {
+    # remove tabs
+    $cmd =~ s/\t//g;
+
+    # first, evaluate target macros in this line
+    debug_print("EVALUATING $cmd");
+    $cmd = eval_command($target, $cmd);
+    
+    # detected local macro
+    if ($cmd =~ /${regex_macro}/) {
+      # macros in isolated context
+    } else {
+      # Evaluate variables/wildcards/etc... 
+
+      # execute
+      debug_print("PLAIN COMMAND: $cmd");
+      run_system_command($cmd);
+    }
+  }
+}
+
+# ------------------------------------------------------------------------------
+# SUBROUTINES: MAKEFILE PARSING
+# ------------------------------------------------------------------------------
+sub parse_makefile ($)
+{
+  for my $line (split(m/\n/, shift)) {
+    # skip over comments
+    next if ($line =~ /^.*\#.*$/);
+
+    # match macro lines
+    if ($line =~ /${regex_macro}/) {
+      $active_target = undef;
+      debug_print("MACRO: $line");
+      add_macro($line);
+
+    # match target lines
+    } elsif ($line =~ /${regex_target}/) {
+      debug_print("TARGET: $line");
+      add_target($line);
+
+    # match terminal command lines
+    } elsif ($line =~ /^[\t].*/) {
+      defined($active_target) or die('no active target');
+      debug_print("[$active_target] CMD: $line");
+      push(@{$active_target->{'cmds'}}, $line);
+
+    # ignore everything else
+    } else {
+      debug_print("LINE: $line");
+    }
+  }
+}
+
+# ------------------------------------------------------------------------------
+# MAIN PROGRAM CODE
+# ------------------------------------------------------------------------------
+sub main (@)
+{
+  my (@args, $mf_contents);
+
+  @args        = shift;
+  $mf_contents = read_makefile($makefile);
+
+  parse_makefile($mf_contents);
+  debug_print("\nBUILDING...\n");
+
+  # if there's no argument, default to all and quit
+  if ($#args == 0) {
+    debug_print("NO TARGETS SPECIFIED -- DEFAULTING TO ALL");
+    debug_print("--- FILL MY BONUS CUP ---\n");
+    build_target_output('all');
+    return;
+  }
+
+  debug_print("STEPPING THROUGH SPECIFIED TARGETS");
+  # step through desired build targets
+  for my $target (@args) {
+    # build 'em
+    build_target_output($target);
+  }
+}
+
+# invoke main subroutine
+main(@ARGV);
