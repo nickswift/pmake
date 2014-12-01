@@ -1,11 +1,12 @@
 #!/usr/bin/perl
 # Partner: Nicholas Wood (njwood@ucsc.edu)
-# Partner: William Cork (wcork@ucsc.edu)
+# Partner: William Cork  (wcork@ucsc.edu)
 use strict;
 use warnings;
 
 # imports
 use Getopt::Std;
+# use File::Slurp;
 use Cwd;
 
 # use getopts in the canonical fashion
@@ -16,14 +17,31 @@ my $debug_mode = (exists $opts{'d'}) ? 1          : 0;
 my $nex_mode   = (exists $opts{'n'}) ? 1          : 0;
 my $makefile   = (exists $opts{'f'}) ? $opts{'f'} : 'Makefile';
 
-# Regexes
-my $regex_macro   = qr/^[\w\$\{\}^\t]+ *\:?= *[\w\$\{\}\.\%\- ]+$/;
-my $regex_target  = qr/^[\w\$\{\}\.^\t]+ *\: *([^ ].*)?$/;
-my $regex_pattern = qr/^%\.[\w\$\{\}\.^\t]+ *\: *.*$/;
+# regular expressions used by pmake
+my $regex_term = 
+  qr/[\w\d\.\$\{\}^\t]*/;
 
-# ------------------------------------------------------------------------------
+my $regex_content = 
+  qr/[\w\d\.\%\$\{\}\<\>\-_=,+;?\/ ]+/;
+
+my $regex_macro = 
+  qr/(${regex_term}) *= *(${regex_content})/;
+
+my $regex_target_header = 
+  qr/\n(${regex_term}) *\: *((${regex_term} *)*)/;
+
+my $regex_target_body = 
+  qr/((\n\t${regex_content}*)*)/;
+
+my $regex_target = 
+  qr/${regex_target_header}${regex_target_body}/;
+
+my $regex_pattern_target = 
+  qr/\n((%\.(.+)) *\: *(%\.(.+)))((\n\t(.*))*)/;
+
+# ----------------------------------------------------------------------
 # SUBROUTINES: HELPER FUNCTIONS
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 sub debug_print ($)
 {
   if ($debug_mode) {
@@ -32,10 +50,12 @@ sub debug_print ($)
   }
 }
 
-# run_system_command: Runs passed command and handles the minus make operator
+# run_system_command: Runs passed command and handles the minus make 
+# operator
 sub run_system_command ($)
 {
-  my ($input, $command, $term_signal, $ignore_status, $core_dumped, $exit_status);
+  my ($input, $command, $term_signal, $ignore_status, $core_dumped, 
+    $exit_status);
 
   $input         = shift;
   $command       = undef;
@@ -74,34 +94,13 @@ if ($return_status != 0) {
   }
 }
 
-# ------------------------------------------------------------------------------
-# SUBROUTINES: FILE MANAGEMENT
-# ------------------------------------------------------------------------------
-# subs_openfile: Reads entire file from first argument and returns it as string.
-sub read_makefile ($)
-{
-  my $file_location = shift;
-  debug_print("Reading in: $file_location ... ");
-  local $/=undef;
-
-  open MAKEFILE, $file_location 
-    or die("Makefile:$file_location could not be opened\n");
-  
-  my $file_contents = <MAKEFILE>;
-  debug_print("DONE");
-  close MAKEFILE;
-  return $file_contents;
-}
-
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # SUBROUTINES: MACROS 
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 my %macros;
 my %targets;
 my $first_target;
-my $active_target;
 my %pattern_targets;
-my $active_pattern_target;
 
 # Find a macro key inside the macro hash -- die if it's not found
 # $ --> the name to look up
@@ -115,9 +114,9 @@ sub find_macro ($)
 # Evaluates a macro value
 sub eval_macros ($)
 {
-  # the following line-noise interprets a macro's ${} values by looking them
-  # up in the relevant hash and replacing instances of that sequence in the
-  # original value string
+  # the following line-noise interprets a macro's ${} values by looking 
+  # them up in the relevant hash and replacing instances of that 
+  # sequence in the original value string
   my $raw_val = shift;
   my $val     = $raw_val;
   while($raw_val =~  m/(\${[^}]+})/g) {
@@ -135,12 +134,11 @@ sub eval_macros ($)
   return $val;
 }
 
-sub add_macro ($)
+sub add_macro ($$$)
 {
   my $line = shift;
-  $line =~ m/([\w\$\{\}]+) *\:?= *([\w\$\{\}\. ]+)/;
-  my $key = $1;
-  my $val = $2;
+  my $key  = shift;
+  my $val  = shift;
 
   # detect an eval_macros
   if ($line =~ m/\:/) {
@@ -164,10 +162,17 @@ sub eval_target_macros ($$)
   while ($raw_val =~ m/(\$@|\$\^|\$<)/g) {
     # get correct macro replacement value
     $tmp_macro = $1;
-    if    ($tmp_macro eq '\$@') { $repl = $tindex;                      }
-    elsif ($tmp_macro eq '\$^') { $repl = join(' ', @{$target{'deps'}});}
-    elsif ($tmp_macro eq '\$<') { $repl = $target{'firstdep'};          }
-    else                        { die('this shouldn\'t be reachable');  }
+
+    if ($tmp_macro eq "\$@") { 
+      $repl = $tindex;
+    } elsif ($tmp_macro eq "\$^") { 
+      $repl = join(' ', @{$target{'deps'}});
+    } elsif ($tmp_macro eq "\$<") { 
+      $repl = $target{'firstdep'};
+    } else { 
+      die('this shouldn\'t be reachable');
+    }
+
     # do replacement
     $tmp_macro =~ s/\$/\\\$/g;
     $val       =~ s/$tmp_macro/$repl/e;
@@ -193,31 +198,35 @@ sub eval_command ($$)
   return eval_macros($raw_cmd);
 }
 
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # SUBROUTINES: TARGETS 
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 
-sub add_target_general ($$)
+sub add_target_general ($$$$)
 {
-  # unset active target flags
-  $active_target         = undef;
-  $active_pattern_target = undef;
-
+  # unset target flags
   my $thash    = shift;
-  my $line     = shift;
-  $line        =~ m/([\w\$\{\}\.%]+) *\: *([\w\$\{\}\.% ]*)/;
-  my $output   = $1;
+  my $output   = shift;
+  my $deps     = shift;
+  my $commands = shift;
 
   # evaluate macros in the target's name
   $output = eval_macros($output);
 
   # evaluate macros in the target's dependency list
-  my $raw_deps = defined($2) ? $2 : '';
-  $raw_deps    = eval_macros($raw_deps);
+  $deps = eval_macros($deps);
 
   # pull dependency list apart by space
-  my @deps = split(m/ /, $raw_deps);
+  my @deps = split(m/ /, $deps);
   my @cmds = ();
+
+  debug_print("DEPENDENCIES -- @deps");
+
+  # split cmds line by newline
+  while ($commands =~ m/\n(.*)/g) {
+    debug_print("--> SPLIT CMD: $1");
+    push(@cmds, $1);
+  }
 
   # define the target as another hash
   my %target;
@@ -230,24 +239,28 @@ sub add_target_general ($$)
       push(@{$target{'deps'}}, $dep);
     }
   } else {
+
     # check for file
-    # TODO: also check timestamp to see if it has been modified since last build
+    # TODO: also check timestamp to see if it has been modified since 
+    # last build
     $target{'built'}    = (-e $output) ? 1 : 0;
     $target{'deps'}     = \@deps;
     $target{'cmds'}     = \@cmds;
     $target{'firstdep'} = $deps[0];
     $thash->{$output}   = \%target;
   }
-
-  $first_target  = defined($first_target) ? $first_target : $output;
-  return \%target;
+  $first_target = defined($first_target) ? $first_target : $output;
 }
 
-sub add_target ($)
+
+sub add_target ($$$)
 {
   my $output = shift;
-  $active_target = add_target_general(\%targets, $output);
-  debug_print("ADDING TARGET: $output --> $active_target");
+  my $deps   = shift;
+  my $cmds   = shift;
+
+  add_target_general(\%targets, $output, $deps, $cmds);
+  debug_print("ADDING TARGET: $output");
 }
 
 # being sure to prototype the function so it can recurse
@@ -276,6 +289,7 @@ sub build_target_output ($)
   # Step through dependencies and ensure they've been built
   for $dep (@deps) {
     if ($targets{$target}->{'built'} == 0) {
+      debug_print("STEPPING INTO DEP: $dep");
       build_target_output($dep);
     }
   }
@@ -302,15 +316,18 @@ sub build_target_output ($)
   }
 }
 
-#-------------------------------------------------------------------------------
+#-----------------------------------------------------------------------
 # SUBROUTINES: PATTERN RULES AND PATTERN EXPANSION
-#-------------------------------------------------------------------------------
+#-----------------------------------------------------------------------
  
-sub add_pattern_target ($)
+sub add_pattern_target ($$$)
 {
   my $output = shift;
-  $active_pattern_target = add_target_general(\%pattern_targets, $output);
-  debug_print("ADDING PATTERN TARGET: $output --> $active_pattern_target");
+  my $deps   = shift;
+  my $cmds   = shift;
+
+  add_target_general(\%pattern_targets, $output, $deps, $cmds);
+  debug_print("ADDING PATTERN TARGET: $output");
 }
 
 sub generate_pattern_target ($)
@@ -346,97 +363,93 @@ sub generate_pattern_target ($)
 
 sub expand_pattern_targets ()
 {
-  my ($pattern, $regex_patt);
-
-  # regex for file extensions
-  $regex_patt = qr/%(\.[^ ]+)/;
-
-  # iterate over members of the hash
+  opendir(DIR, getcwd);
   foreach my $key (keys %pattern_targets) {
-    debug_print("KEY: $key");
-    # reset the pattern
-    $pattern = undef;
+    my @deps        = @{$pattern_targets{$key}->{'deps'}};
+    my $dep         = @deps[0];
+    my @cmds        = @{$pattern_targets{$key}->{'cmds'}};
+    my $jcmds;
+    $dep            =~ m/%(\..+)/;
+    my $patt        = $1;
+    $key            =~ m/%(\..+)/;
+    my $target_patt = $1;
 
-    # pull apart dependencies
-    for my $dep (@{$pattern_targets{$key}->{'deps'}}) {
-      debug_print("DEP: $dep");
-      # first match determines the pattern (because I'm not Richard Stallman)
-      if ($dep =~ m/${regex_patt}/) {
-        $pattern = $1;
-        last;
-      }
+    # hacking the commands list a little bit
+    for my $cmd (@cmds) {
+      $jcmds .= "\n$cmd";
     }
-    debug_print("FOUND PATTERN: $pattern");
-    $pattern =~ s/\./\\./g;
 
-    # search for %.whatevers in this directory
-    opendir(DIR, getcwd);
     while (my $file = readdir(DIR)) {
-      debug_print("TESTING $file");
-      # test against pattern
-      if ($file =~ m/$pattern/) {
-        debug_print("MATCH [$file]");
-        # if there's a match, do our thing
-        generate_pattern_target($file);
+      if ($file =~ m/(.+${patt})/) {
+        my $match = $1;
+        debug_print("FOUND: $match");
+        $match =~ m/(.+)\.(.+)/;
+        my $output = "$1$target_patt";
+
+        debug_print("TARGET:\n    OUTPUT : $output\n    ");
+        debug_print("DEPS   : $file\n    CMDS   : $@cmds\n");
+
+        # it's too late to be subtle
+        $output =~ s/ //g;
+        $file   =~ s/ //g;
+        add_target($output, $file, $jcmds);
+
+        debug_print("JUST ADDED: $output -> $targets{$output}");
       }
     }
-    closedir(DIR);
   }
+  closedir(DIR);
 }
 
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # SUBROUTINES: MAKEFILE PARSING
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 sub parse_makefile ($)
 {
-  for my $line (split(m/\n/, shift)) {
-    # skip over comments
-    next if ($line =~ /^.*\#.*$/);
+  # use regexes to extract parts of the makefile
+  my $contents = shift;
+  # remove comments
+  $contents =~ s/.*#.*//g;
+  # extract macros
+  while ($contents =~ m/\n${regex_macro}/g) {
+    add_macro($&, $1, $2);
+  }
+  # extract targets
+  while ($contents =~ m/${regex_target}/g) {
+    add_target($1, $2, $4);
+    debug_print("TARGET:\n    OUTPUT : $1\n    ");
+    debug_print("DEPS   : $2\n    CMDS   : $4\n");
 
-    # match macro lines
-    if ($line =~ /${regex_macro}/) {
-      $active_target         = undef;
-      $active_pattern_target = undef;
-      debug_print("MACRO: $line");
-      add_macro($line);
-
-    # match pattern target lines
-    } elsif ($line =~ /${regex_pattern}/) {
-      debug_print("PATTERN TARGET: $line");
-      add_pattern_target($line);
-
-    # match target lines
-    } elsif ($line =~ /${regex_target}/) {
-      debug_print("TARGET: $line");
-      add_target($line);
-
-    # match terminal command lines
-    } elsif ($line =~ /^[\t].*/) {
-      # add commands to target
-      if (defined($active_target)) {
-        debug_print("[$active_target] CMD: $line");
-        push(@{$active_target->{'cmds'}}, $line);
-      # add commands to pattern target
-      } elsif (defined($active_pattern_target)) {
-        debug_print("[$active_pattern_target] CMD TEMPLATE: $line");
-        push(@{$active_pattern_target->{'cmds'}}, $line);
-      } else {
-        die('no active target');
-      }
-    # ignore everything else
-    } else {
-      debug_print("LINE: $line");
-    }
+  }
+  while ($contents =~ m/${regex_pattern_target}/g) {
+    add_pattern_target($2, $4, $6);
+    debug_print("PATTERN TARGET:\n    OUTPUT : $2\n    ");
+    debug_print("DEPS   : $4\n    CMDS   : $6\n");
   }
 }
 
-# ------------------------------------------------------------------------------
+# read input file
+sub read_file ($) 
+{
+  my ($path) = @_;
+  my $ret;
+  open FILE, $path or die "Unable to open makefile: $path";
+
+  while (<FILE>) {
+    $ret .= $_;
+  }
+  close FILE;
+  return $ret;
+}
+
+# ----------------------------------------------------------------------
 # MAIN PROGRAM CODE
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 sub main ()
 {
   my ($mf_contents, $entry_point);
-  $mf_contents = read_makefile($makefile);
+
+  $mf_contents = read_file($makefile);
   parse_makefile($mf_contents);
 
   debug_print("\n--- EXPANDING PATTERN TARGETS ---\n");
