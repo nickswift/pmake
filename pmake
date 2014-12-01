@@ -6,7 +6,6 @@ use warnings;
 
 # imports
 use Getopt::Std;
-# use File::Slurp;
 use Cwd;
 
 # use getopts in the canonical fashion
