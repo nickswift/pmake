@@ -365,7 +365,7 @@ sub expand_pattern_targets ()
   opendir(DIR, getcwd);
   foreach my $key (keys %pattern_targets) {
     my @deps        = @{$pattern_targets{$key}->{'deps'}};
-    my $dep         = $deps[0];
+    my $dep         = @deps[0];
     my @cmds        = @{$pattern_targets{$key}->{'cmds'}};
     my $jcmds;
     $dep            =~ m/%(\..+)/;
