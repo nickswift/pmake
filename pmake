@@ -309,6 +309,10 @@ sub build_target_output ($)
       # execute
       debug_print("PLAIN COMMAND: $cmd");
 
+      $cmd = eval_macros($cmd);
+
+      debug_print("EVAL COMMAND: $cmd");
+
       print("$cmd\n");
       run_system_command($cmd) if (!$nex_mode);
     }
