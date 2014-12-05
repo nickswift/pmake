@@ -272,6 +272,8 @@ sub build_target_output ($)
   my %macros_local;
   $target = shift;
 
+  $target = eval_macros($target);
+
   # If there's no target, look for a file, otherwise build the target
   if (!exists($targets{$target})) { 
     debug_print("TARGET \"$target\" DOES NOT EXIST");
@@ -368,9 +370,9 @@ sub expand_pattern_targets ()
 {
   opendir(DIR, getcwd);
   foreach my $key (keys %pattern_targets) {
-    my @deps        = @{$pattern_targets{$key}->{'deps'}};
-    my $dep         = $deps[0];
-    my @cmds        = @{$pattern_targets{$key}->{'cmds'}};
+    my @deps = @{$pattern_targets{$key}->{'deps'}};
+    my $dep  = $deps[0];
+    my @cmds = @{$pattern_targets{$key}->{'cmds'}};
     my $jcmds;
     $dep            =~ m/%(\..+)/;
     my $patt        = $1;
