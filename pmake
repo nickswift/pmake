@@ -21,10 +21,13 @@ my $regex_term =
   qr/[\w\d\.\$\{\}^\t]*/;
 
 my $regex_content = 
-  qr/[\w\d\.\%\$\{\}\<\>\-_=,+;?\/ ]+/;
+  qr/[\w\d\.\%\$\{\}\<\>\-_=,+;:?\/ ]+/;
 
 my $regex_macro = 
   qr/(${regex_term}) *= *(${regex_content})/;
+
+my $regex_macro_ident = 
+  qr/\$\{(${regex_term})\}/;
 
 my $regex_target_header = 
   qr/\n(${regex_term}) *\: *((${regex_term} *)*)/;
@@ -70,18 +73,34 @@ sub run_system_command ($)
     $command = $input;
     debug_print("Command $command Error will not be ignored");
   }
-  my @args   = split(m/ /, $command);
-  my $output = system(@args); #or exit ($?);
+  my @args = split(m/ /, $command);
+  my $redir_file;
+
+  # process for possible redirection
+  my @rargs = ();
+  while (@args) {
+    my $val = shift(@args);
+
+    if ($val =~ m/>([^>]+)/) {
+      # open file with STDOUT
+      open($redir_file, '>', $1) or die("Could not open file: $!");
+      last;
+    } else {
+      push(@rargs, $val);
+    }
+  }
+
+  my $output = system(@rargs); #or exit ($?);
   my $return_status = $?;
   $term_signal = $? & 0x7F;
   $core_dumped = $? & 0x80;
   $exit_status = ($? >> 8) & 0xFF;
 
-if ($return_status != 0) {
-  debug_print("Return status: $return_status");
-  debug_print("Term Signal: $term_signal");
-  debug_print("Core Dumped: $core_dumped");
-  debug_print("Exit Status: $exit_status");
+  if ($return_status != 0) {
+    debug_print("Return status: $return_status");
+    debug_print("Term Signal: $term_signal");
+    debug_print("Core Dumped: $core_dumped");
+    debug_print("Exit Status: $exit_status");
   }
   if($exit_status != 0) {
     if($ignore_status == 1) {
@@ -90,6 +109,13 @@ if ($return_status != 0) {
         debug_print("BAD Command");
         exit ($exit_status);
     }
+  }
+
+  # do redirection if it's needed
+  if (defined($redir_file)) {
+    print $redir_file $output;
+
+    close($redir_file);
   }
 }
 
@@ -118,6 +144,7 @@ sub eval_macros ($)
   # sequence in the original value string
   my $raw_val = shift;
   my $val     = $raw_val;
+
   while($raw_val =~  m/(\${[^}]+})/g) {
     my ($tmp_macro, $repl);
 
@@ -166,7 +193,9 @@ sub eval_target_macros ($$)
       $repl = $tindex;
     } elsif ($tmp_macro eq "\$^") { 
       $repl = join(' ', @{$target{'deps'}});
-    } elsif ($tmp_macro eq "\$<") { 
+    } elsif ($tmp_macro eq "\$<") {
+
+      debug_print("FIRSTDEP IS: ".$target{'firstdep'});
       $repl = $target{'firstdep'};
     } else { 
       die('this shouldn\'t be reachable');
@@ -200,6 +229,18 @@ sub eval_command ($$)
 # ----------------------------------------------------------------------
 # SUBROUTINES: TARGETS 
 # ----------------------------------------------------------------------
+sub macro_list_iter ($);
+
+sub macro_list_iter ($)
+{
+  my ($remaining) = @_;
+
+  if ($remaining =~ m/(${regex_term}) +(${regex_term})/) {
+    debug_print("EXTRACTING: $& --> $1 : $2");
+    return eval_macros($1) . ' ' . macro_list_iter($2);
+  } 
+  return eval_macros($remaining);
+}
 
 sub add_target_general ($$$$)
 {
@@ -209,11 +250,13 @@ sub add_target_general ($$$$)
   my $deps     = shift;
   my $commands = shift;
 
+  debug_print("COMMANDS: $commands");
+
   # evaluate macros in the target's name
   $output = eval_macros($output);
 
   # evaluate macros in the target's dependency list
-  $deps = eval_macros($deps);
+  $deps = macro_list_iter(eval_macros($deps));
 
   # pull dependency list apart by space
   my @deps = split(m/ /, $deps);
@@ -223,20 +266,43 @@ sub add_target_general ($$$$)
 
   # split cmds line by newline
   while ($commands =~ m/\n(.*)/g) {
+    next if ($1 eq "");
     debug_print("--> SPLIT CMD: $1");
     push(@cmds, $1);
   }
+
+  debug_print("HAS COMMANDS:\n");
+  map { debug_print("\"$_\"\n"); } @cmds;
 
   # define the target as another hash
   my %target;
 
   # check whether the target exists already
   if (exists($thash->{$output})) {
-    # Append dependencies to this target's extant dependency list
     %target = %{$thash->{$output}};
-    for my $dep (@deps) {
-      push(@{$target{'deps'}}, $dep);
-    }
+    debug_print("TARGET ALREADY EXISTS");
+
+    # Append dependencies to this target's extant dependency list
+    map {
+      debug_print("ADDING DEP: $_");
+      my $tmp = $_;
+      unshift(@{$target{'deps'}}, $tmp) if !grep { 
+        $_ eq $tmp } @{$target{'deps'}};
+    } @deps;
+
+    # reset firstdep
+    # $target{'firstdep'} = $deps[0];
+    $thash->{$output}{'firstdep'} = $deps[0];
+    debug_print("FIRSTDEP: " . $target{'firstdep'});
+
+    @{$thash->{$output}{'cmds'}} = ();
+    map {
+      debug_print("ADDING CMD: $_");
+      my $tmp = $_;
+      unshift(@{$target{'cmds'}}, $tmp) if !grep { 
+        $_ eq $tmp } @{$target{'cmds'}};
+    } @cmds;
+
   } else {
 
     # check for file
@@ -248,6 +314,7 @@ sub add_target_general ($$$$)
     $target{'firstdep'} = $deps[0];
     $thash->{$output}   = \%target;
   }
+  
   $first_target = defined($first_target) ? $first_target : $output;
 }
 
@@ -272,12 +339,11 @@ sub build_target_output ($)
   my %macros_local;
   $target = shift;
 
-  $target = eval_macros($target);
-
   # If there's no target, look for a file, otherwise build the target
   if (!exists($targets{$target})) { 
     debug_print("TARGET \"$target\" DOES NOT EXIST");
     if (-e $target) {
+      debug_print("FILE \"$target\" EXISTS");
       return;
     }
   }
@@ -286,6 +352,8 @@ sub build_target_output ($)
   my @commands = @{$targets{$target}->{'cmds'}};
 
   debug_print("BUILDING TARGET: $target");
+  debug_print("HAS COMMANDS:\n");
+  map { debug_print("\"$_\"\n"); } @commands;
 
   # Step through dependencies and ensure they've been built
   for $dep (@deps) {
@@ -315,7 +383,10 @@ sub build_target_output ($)
 
       debug_print("EVAL COMMAND: $cmd");
 
-      print("$cmd\n");
+      # REMOVE LEADING "- " FROM COMMANDS.
+      my $cmd_copy = $cmd;
+      $cmd_copy =~ s/^- ?//g;
+      print("$cmd_copy\n");
       run_system_command($cmd) if (!$nex_mode);
     }
   }
@@ -366,45 +437,60 @@ sub generate_pattern_target ($)
   $targets{$output}   = \%target;
 }
 
+# REFACTOR
 sub expand_pattern_targets ()
 {
+  # Look at all files in current working directory
   opendir(DIR, getcwd);
-  foreach my $key (keys %pattern_targets) {
-    my @deps = @{$pattern_targets{$key}->{'deps'}};
-    my $dep  = $deps[0];
-    my @cmds = @{$pattern_targets{$key}->{'cmds'}};
-    my $jcmds;
-    $dep            =~ m/%(\..+)/;
-    my $patt        = $1;
-    $key            =~ m/%(\..+)/;
-    my $target_patt = $1;
 
-    # hacking the commands list a little bit
-    for my $cmd (@cmds) {
-      $jcmds .= "\n$cmd";
-    }
-
-    while (my $file = readdir(DIR)) {
-      if ($file =~ m/(.+${patt})/) {
-        my $match = $1;
-        debug_print("FOUND: $match");
-        $match =~ m/(.+)\.(.+)/;
-        my $output = "$1$target_patt";
-
-        debug_print("TARGET:\n    OUTPUT : $output\n    ");
-        debug_print("DEPS   : $file\n    CMDS   : $@cmds\n");
-
-        # it's too late to be subtle
-        $output =~ s/ //g;
-        $file   =~ s/ //g;
-        add_target($output, $file, $jcmds);
-
-        debug_print("JUST ADDED: $output -> $targets{$output}");
-      }
-    }
-  }
+  # fit each file into an array
+  my @files = map { "./$_" } readdir(DIR);
   closedir(DIR);
+
+  # iterate through targets
+  map {
+    # compare targ dependency to each file in file array
+    # assuming there's only one dependency in a target pattern
+    my $dep  = @{$pattern_targets{$_}->{'deps'}}[0];
+    my @cmds = @{$pattern_targets{$_}->{'cmds'}};
+    my $targ = $_;
+
+    # extract extension from target and dependency
+    $dep =~ m/%(\..+)/;
+    my $patt = $1;
+    $patt =~ s/\./\\\./g;
+
+    $targ =~ m/%(\..+)/;
+    my $tpatt = $1;
+    $tpatt =~ s/\./\\\./g;
+    
+    # build commands list
+    my $jcmds;
+    foreach (@cmds) { $jcmds .= "\n$_" };
+
+    # filter out non-matching files
+    debug_print("PATTERN: $patt --> $targ");
+    map {
+      $_ =~ /(${regex_term}+)(${patt})/;
+      debug_print("MATCHING FILE: $1 --> $2");
+
+      # find "from" and "to" file names
+      my $from = "$1$patt";
+      my $to   = "$1$tpatt";
+      $from =~ s/[\\ ]//g;
+      $to   =~ s/[\\ ]//g;
+      
+      debug_print("FROM: $from TO: $to");
+      debug_print("CMDS: $jcmds");
+
+      add_target($to, $from, $jcmds);
+
+    } grep {/${regex_term}+${patt}/} @files;
+
+  } keys %pattern_targets;
 }
+
+# helper -- construct real target, add to tree
 
 # ----------------------------------------------------------------------
 # SUBROUTINES: MAKEFILE PARSING
@@ -424,7 +510,6 @@ sub parse_makefile ($)
     add_target($1, $2, $4);
     debug_print("TARGET:\n    OUTPUT : $1\n    ");
     debug_print("DEPS   : $2\n    CMDS   : $4\n");
-
   }
   while ($contents =~ m/${regex_pattern_target}/g) {
     add_pattern_target($2, $4, $6);

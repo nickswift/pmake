@@ -2,25 +2,33 @@ This program was completed using pair programming.
 Partner: Nicholas Wood (njwood@ucsc.edu)
 Partner: William Cork (wcork@ucsc.edu)
 
-Nicholas Wood spent        0  hrs alone
-William Cork  spent        0  hrs alone
-Both of us    spent        30 hrs together (pair programming the whole way)
+Nicholas Wood spent  0  hrs alone
+William Cork  spent  0  hrs alone
+Both of us    spent  30 hrs together (pair programming the whole way)
 
-Please grade the work submitted by njwood@ucsc.edu
-and not the work submitted by wcork@ucsc.edu.
+Please grade the work submitted by wcork@ucsc.edu
+and not the work submitted by njwood@ucsc.edu.
 
 submitted on unix.ucsc.edu via:
 For Nicholas Wood (echo wcork > PARTNER):
-submit cmps112-wm.f14 asg1 pmake README PARTNER
-For William Cork (echo njwood > PARTNER):
 submit cmps112-wm.f14 asg1 README PARTNER
+submit cmps112-wm.f14 asg5 README PARTNER
+For William Cork (echo njwood > PARTNER):
+submit cmps112-wm.f14 asg1 pmake README PARTNER
+submit cmps112-wm.f14 asg5 pmake README PARTNER
 
 A NOTE ON PATTERN MATCHING
 
-We attempted to implement gmake's pattern matching feature, but were not able to get full functionality.
-We were, however, able to build a set of rules based on patterns, and we were able to use those rules
+We attempted to implement gmake's pattern matching feature, but were not
+able to get full functionality. We were, however, able to build a set of
+rules based on patterns, and we were able to use those rules
 to find files in the working directory that matched the given patterns.
 
-We then attempted to use the pattern rules as templates to build rules for each required matched file
-(eg. hello.c --> hello.o, and main.c --> main.o using the same rule) this is the requirement we 
-didn't quite finish, but we are confident that this is essentially what needs to happen.
+We then attempted to use the pattern rules as templates to build rules 
+for each required matched file (eg. hello.c --> hello.o, and main.c --> 
+main.o using the same rule) this is the requirement we didn't quite 
+finish, but we are confident that this is essentially what needs to 
+happen.
+
+
+
